@@ -1,4 +1,4 @@
-# AI_Chronicles - Excess comovement across US industries, 2005–2026
+# Excess comovement across US industries, 2005–2026
 
 Replication code and data for the empirical exercise in the AI Chronicles article
 **"Efficient Firms, Fragile System: Can We Measure AI Herding Before It Bites?"**
@@ -135,7 +135,8 @@ In summary:
 If you use this code, please cite:
 
 > Galeazzi, G. (2026). *Excess comovement across US industries, 2005–2026* [Code and data].
-> Replication material for "Efficient Firms, Fragile System", AI Chronicles. [DOI or URL: to add]
+> Replication material for "Efficient Firms, Fragile System", AI Chronicles.
+> https://github.com/giorgiagaleazzi/AI_Chronicles/blob/main/Efficient%20Firms%2C%20Fragile%20System
 
 Data: Kenneth R. French, Data Library, Tuck School of Business at Dartmouth.
 
