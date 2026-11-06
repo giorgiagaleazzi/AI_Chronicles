@@ -1,0 +1,181 @@
+# =============================================================================
+# Excess comovement across US industries, 2005-2026  (v3: 126- and 63-day windows)
+# For: AI Chronicles, "Efficient Firms, Fragile System"
+#
+# Question: after removing common factors, do industries move together more
+# than they used to? A rise is CONSISTENT with growing homogeneity in how
+# markets process information. It is not evidence that AI causes it.
+#
+# v2 compares two factor models:
+#   - FF3:  Mkt-RF, SMB, HML                          (as in v1)
+#   - FF6:  Mkt-RF, SMB, HML, RMW, CMA, Momentum      (robustness)
+# If the post-2023 rise survives FF6, it is not just missing standard factors.
+#
+# Data: Kenneth French Data Library (free, daily)
+# =============================================================================
+
+library(data.table)
+library(ggplot2)
+
+# ---- Settings ---------------------------------------------------------------
+start_date <- as.Date("2005-01-01")
+windows    <- c(126, 63)   # trading days per window (~6 and ~3 months)
+step       <- 5     # compute every 5 trading days (weekly)
+min_frac   <- 0.8   # min share of non-missing days per industry in a window
+
+# ---- Download helpers -------------------------------------------------------
+base_url <- "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+
+fetch_french <- function(zip_name) {
+  tmp <- tempfile(fileext = ".zip")
+  download.file(paste0(base_url, zip_name), tmp, mode = "wb", quiet = TRUE)
+  csv <- unzip(tmp, exdir = tempfile())
+  readLines(csv[1], warn = FALSE)
+}
+
+# Reads the FIRST data block of a French CSV (value-weighted for industries)
+parse_first_block <- function(lines) {
+  is_data <- grepl("^\\s*\\d{8}\\s*,", lines)
+  first   <- which(is_data)[1]
+  header  <- lines[first - 1]
+  after   <- which(!is_data & seq_along(lines) > first)[1]
+  last    <- if (is.na(after)) length(lines) else after - 1
+  dt <- fread(text = c(header, lines[first:last]), header = TRUE)
+  setnames(dt, trimws(names(dt)))
+  setnames(dt, 1, "date")
+  dt[, date := as.Date(as.character(date), format = "%Y%m%d")]
+  num <- setdiff(names(dt), "date")
+  dt[, (num) := lapply(.SD, function(x) { x[x <= -99.99] <- NA; x / 100 }),
+     .SDcols = num]
+  dt
+}
+
+ind <- parse_first_block(fetch_french("49_Industry_Portfolios_daily_CSV.zip"))
+ff5 <- parse_first_block(fetch_french("F-F_Research_Data_5_Factors_2x3_daily_CSV.zip"))
+mom <- parse_first_block(fetch_french("F-F_Momentum_Factor_daily_CSV.zip"))
+setnames(ff5, "Mkt-RF", "MKT")
+setnames(mom, 2, "MOM")
+
+dt <- Reduce(function(a, b) merge(a, b, by = "date"), list(ind, ff5, mom))
+dt <- dt[date >= start_date]
+industries <- setdiff(names(ind), "date")
+
+R   <- as.matrix(dt[, ..industries]) - dt$RF
+X3  <- cbind(1, as.matrix(dt[, .(MKT, SMB, HML)]))
+X6  <- cbind(1, as.matrix(dt[, .(MKT, SMB, HML, RMW, CMA, MOM)]))
+
+# ---- Rolling computation ----------------------------------------------------
+avg_offdiag <- function(C) mean(C[upper.tri(C)], na.rm = TRUE)
+
+resid_cor <- function(Rw, Xw) {
+  E <- sapply(seq_len(ncol(Rw)), function(j) {
+    y <- Rw[, j]; ok <- !is.na(y)
+    out <- rep(NA_real_, length(y))
+    out[ok] <- lm.fit(Xw[ok, , drop = FALSE], y[ok])$residuals
+    out
+  })
+  avg_offdiag(cor(E, use = "pairwise.complete.obs"))
+}
+
+run_window <- function(window) {
+  min_obs <- ceiling(min_frac * window)
+  ends <- seq(window, nrow(dt), by = step)
+  rbindlist(lapply(ends, function(e) {
+    idx  <- (e - window + 1):e
+    Rw   <- R[idx, , drop = FALSE]
+    keep <- colSums(!is.na(Rw)) >= min_obs
+    Rw   <- Rw[, keep, drop = FALSE]
+    data.table(
+      window = window,
+      date   = dt$date[e],
+      raw    = avg_offdiag(cor(Rw, use = "pairwise.complete.obs")),
+      ff3    = resid_cor(Rw, X3[idx, , drop = FALSE]),
+      ff6    = resid_cor(Rw, X6[idx, , drop = FALSE]),
+      n_ind  = ncol(Rw)
+    )
+  }))
+}
+
+res_all <- rbindlist(lapply(windows, run_window))
+fwrite(res_all, "excess_comovement_v3.csv")
+
+# ---- Summary by period and window -------------------------------------------
+res_all[, period := fcase(
+  date <  as.Date("2010-01-01"), "2005-09",
+  date <  as.Date("2015-01-01"), "2010-14",
+  date <  as.Date("2020-01-01"), "2015-19",
+  date <  as.Date("2023-01-01"), "2020-22",
+  default = "2023-26")]
+summary_tab <- res_all[, .(raw = round(mean(raw), 3),
+                           ff3 = round(mean(ff3), 4),
+                           ff6 = round(mean(ff6), 4)), by = .(window, period)]
+print(dcast(summary_tab, period ~ window, value.var = c("raw", "ff6")))
+fwrite(summary_tab, "excess_comovement_v3_summary.csv")
+cat("Final observation:", format(max(res_all$date)), "\n")
+
+# The 126-day series is used for the main chart, as in v2
+res <- res_all[window == 126]
+window <- 126
+
+# ---- Charts (AI Chronicles palette) -----------------------------------------
+cream <- "#F4EDDF"; gold <- "#A8822E"; ink <- "#1A1A1A"
+
+events <- data.table(
+  date  = as.Date(c("2007-08-07", "2010-05-06", "2020-03-16")),
+  label = c("Quant quake", "Flash Crash", "Covid stress")
+)
+
+theme_ac <- theme_minimal(base_family = "serif") +
+  theme(
+    plot.background    = element_rect(fill = cream, colour = NA),
+    panel.background   = element_rect(fill = cream, colour = NA),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title    = element_text(face = "bold", colour = ink, size = 15),
+    plot.subtitle = element_text(colour = ink, size = 10),
+    plot.caption  = element_text(colour = "#6B5A33", size = 8, hjust = 0),
+    axis.text     = element_text(colour = ink),
+    legend.position = "top"
+  )
+
+event_layers <- list(
+  geom_vline(data = events, aes(xintercept = date),
+             colour = ink, linewidth = 0.3, linetype = "dashed", alpha = 0.5),
+  geom_text(data = events, aes(x = date, y = Inf, label = label),
+            inherit.aes = FALSE, angle = 90, vjust = -0.4, hjust = 1.05,
+            size = 3, colour = ink, family = "serif")
+)
+
+# Article chart: FF3 vs FF6 residual comovement (126-day window, as in v2)
+long <- melt(res, id.vars = "date", measure.vars = c("ff3", "ff6"))
+p <- ggplot(long, aes(date, value, colour = variable)) +
+  event_layers +
+  geom_line(linewidth = 0.7) +
+  scale_colour_manual(values = c(ff3 = "#C9B27A", ff6 = gold),
+                      labels = c(ff3 = "After 3 factors",
+                                 ff6 = "After 6 factors (incl. momentum)")) +
+  labs(
+    title    = "Do industries move together more than common factors explain?",
+    subtitle = paste0("Average pairwise residual correlation of 49 US industry returns; rolling ",
+                      window, "-day window"),
+    x = NULL, y = "Average residual correlation", colour = NULL,
+    caption = "Source: Kenneth French Data Library; author's calculations. Illustrative, not causal."
+  ) +
+  theme_ac
+ggsave("excess_comovement_v3.png", p, width = 10, height = 5.6, dpi = 200, bg = cream)
+
+# Robustness chart: 6-factor residual comovement, 126- vs 63-day windows
+rob <- res_all[, .(date, ff6, window = factor(window, levels = c(126, 63),
+                                              labels = c("126-day window", "63-day window")))]
+p3 <- ggplot(rob, aes(date, ff6, colour = window)) +
+  event_layers +
+  geom_line(linewidth = 0.6) +
+  scale_colour_manual(values = c("126-day window" = gold, "63-day window" = ink)) +
+  labs(title = "Robustness: does the 2020 shift survive a shorter window?",
+       subtitle = "Average residual correlation after 6 factors, 49 US industries",
+       x = NULL, y = "Average residual correlation", colour = NULL,
+       caption = "Source: Kenneth French Data Library; author's calculations. Illustrative, not causal.") +
+  theme_ac
+ggsave("robustness_windows_v3.png", p3, width = 10, height = 5.6, dpi = 200, bg = cream)
+
+print(p3)
